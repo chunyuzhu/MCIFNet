@@ -984,7 +984,7 @@ if __name__ == '__main__':
                      in_chans_MSI=4,
                      in_chans_HSI=103,
                      embed_dim=96,
-                     depths=(6, 6, 6, 6),
+                     depths=(1,),
                      mlp_dim=[256, 128],
                      drop_rate=0.,
                      d_state = 16,
