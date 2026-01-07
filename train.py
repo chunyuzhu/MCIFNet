@@ -4,7 +4,7 @@ from utils import to_var, batch_ids2words
 import random
 import torch.nn.functional as F
 import cv2
-
+import numpy as np
 
 def spatial_edge(x):
     edge1 = x[:, :, 0:x.size(2)-1, :] - x[:, :, 1:x.size(2), :]
@@ -16,7 +16,29 @@ def spectral_edge(x):
     edge = x[:, 0:x.size(1)-1, :, :] - x[:, 1:x.size(1), :, :]
 
     return edge
+def matlab_style_gauss2D(shape=(5,5), sigma=2):
+    m, n = [(ss - 1.) / 2. for ss in shape]
+    y, x = np.ogrid[-m:m+1, -n:n+1]
+    h = np.exp(-(x*x + y*y) / (2.*sigma*sigma))
+    h[h < np.finfo(h.dtype).eps * h.max()] = 0
+    sumh = h.sum()
+    if sumh != 0:
+        h /= sumh
+    return h
 
+def gaussian_blur_tensor(x: torch.Tensor, ksize=5, sigma=2.0):
+    # x: [N, C, H, W]
+    assert x.ndim == 4
+    N, C, H, W = x.shape
+
+    k = matlab_style_gauss2D((ksize, ksize), sigma).astype(np.float32)
+    k = torch.from_numpy(k).to(device=x.device, dtype=x.dtype)  # [kH, kW]
+    k = k.view(1, 1, ksize, ksize).repeat(C, 1, 1, 1)          # [C,1,kH,kW]
+
+    pad = ksize // 2
+    # groups=C => 每个通道各自卷积，不混通道
+    y = F.conv2d(x, k, padding=pad, groups=C)
+    return y 
 
 def train(train_list, 
           image_size, 
@@ -44,9 +66,9 @@ def train(train_list,
     # h_str = random.randint(0, h-image_size-1)
     # w_str = random.randint(0, w-image_size-1)
 
-    train_lr = train_ref[:, :, h_str:h_str+image_size, w_str:w_str+image_size]
-    train_ref = train_ref[:, :, h_str:h_str+image_size, w_str:w_str+image_size]
-    train_lr = F.interpolate(train_ref, scale_factor=1/(scale_ratio*1.0))
+    train_ref = train_ref[:, :, h_str:h_str+image_size, w_str:w_str+image_size]    
+    train_lr = gaussian_blur_tensor(train_ref, ksize=5, sigma=2.0)
+    train_lr = F.interpolate(train_ref, scale_factor=1/(scale_ratio*1.0))    
     train_hr = train_hr[:, :, h_str:h_str+image_size, w_str:w_str+image_size]
 
     model.train()
