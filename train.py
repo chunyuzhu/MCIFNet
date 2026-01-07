@@ -16,29 +16,99 @@ def spectral_edge(x):
     edge = x[:, 0:x.size(1)-1, :, :] - x[:, 1:x.size(1), :, :]
 
     return edge
-def matlab_style_gauss2D(shape=(5,5), sigma=2):
+def _gauss2d_numpy(shape=(5, 5), sigma=2):
     m, n = [(ss - 1.) / 2. for ss in shape]
     y, x = np.ogrid[-m:m+1, -n:n+1]
     h = np.exp(-(x*x + y*y) / (2.*sigma*sigma))
     h[h < np.finfo(h.dtype).eps * h.max()] = 0
-    sumh = h.sum()
-    if sumh != 0:
-        h /= sumh
+    s = h.sum()
+    if s != 0:
+        h /= s
     return h
 
-def gaussian_blur_tensor(x: torch.Tensor, ksize=5, sigma=2.0):
-    # x: [N, C, H, W]
-    assert x.ndim == 4
-    N, C, H, W = x.shape
+def _gauss2d_torch(kernel_size: int, sigma: float, device, dtype):
+    # 与 numpy 版本一致：坐标范围 [-m, m]
+    m = (kernel_size - 1) / 2.0
+    coords = torch.arange(kernel_size, device=device, dtype=dtype) - m
+    yy, xx = torch.meshgrid(coords, coords, indexing="ij")
+    h = torch.exp(-(xx*xx + yy*yy) / (2.0 * sigma * sigma))
+    # 与 numpy 一致：极小值截断（近似即可，不做也基本一致）
+    eps = torch.finfo(dtype).eps
+    h = torch.where(h < eps * h.max(), torch.zeros_like(h), h)
+    s = h.sum()
+    if s != 0:
+        h = h / s
+    return h
 
-    k = matlab_style_gauss2D((ksize, ksize), sigma).astype(np.float32)
-    k = torch.from_numpy(k).to(device=x.device, dtype=x.dtype)  # [kH, kW]
-    k = k.view(1, 1, ksize, ksize).repeat(C, 1, 1, 1)          # [C,1,kH,kW]
+def downsamplePSF(img, sigma, stride):
+    """
+    兼容：
+      - numpy: (H,W,C) 或 (H,W)
+      - torch: (B,C,H,W) 或 (C,H,W) 或 (H,W)
+    输出：
+      - numpy -> numpy (H//stride, W//stride, C)
+      - torch -> torch (B,C,H_out,W_out) / (C,H_out,W_out)
+    """
+    # -------- torch 分支：保持与原始 numpy 实现等价（valid 卷积 + stride 下采样）--------
+    if torch.is_tensor(img):
+        x = img
+        orig_ndim = x.dim()
 
-    pad = ksize // 2
-    # groups=C => 每个通道各自卷积，不混通道
-    y = F.conv2d(x, k, padding=pad, groups=C)
-    return y 
+        if orig_ndim == 2:          # (H,W) -> (1,1,H,W)
+            x = x.unsqueeze(0).unsqueeze(0)
+        elif orig_ndim == 3:        # (C,H,W) -> (1,C,H,W)
+            x = x.unsqueeze(0)
+        elif orig_ndim == 4:        # (B,C,H,W)
+            pass
+        else:
+            raise ValueError(f"Unsupported torch tensor dim={orig_ndim}, expected 2/3/4.")
+
+        if not x.is_floating_point():
+            x = x.float()
+
+        B, C, H, W = x.shape
+        k = stride  # 与你原实现一致：核大小 = stride
+        kernel2d = _gauss2d_torch(kernel_size=k, sigma=sigma, device=x.device, dtype=x.dtype)  # (k,k)
+
+        # depthwise: (C,1,k,k)
+        weight = kernel2d.view(1, 1, k, k).repeat(C, 1, 1, 1)
+
+        # 等价于：对每个通道做 valid 卷积，然后以 stride 采样
+        y = F.conv2d(x, weight=weight, bias=None, stride=stride, padding=0, groups=C)
+
+        # 还原维度
+        if orig_ndim == 2:
+            return y[0, 0]                 # (H_out,W_out)
+        elif orig_ndim == 3:
+            return y[0]                    # (C,H_out,W_out)
+        else:
+            return y                       # (B,C,H_out,W_out)
+
+    # -------- numpy 分支：保留你原来的实现 --------
+    h = _gauss2d_numpy((stride, stride), sigma)
+    if img.ndim == 3:
+        img_w, img_h, img_c = img.shape
+    elif img.ndim == 2:
+        img_c = 1
+        img_w, img_h = img.shape
+        img = img.reshape((img_w, img_h, 1))
+    else:
+        raise ValueError(f"Unsupported numpy array dim={img.ndim}, expected 2/3.")
+
+    from scipy import signal
+    out_img = np.zeros((img_w // stride, img_h // stride, img_c), dtype=np.float64)
+    for i in range(img_c):
+        out = signal.convolve2d(img[:, :, i], h, 'valid')
+        out_img[:, :, i] = out[::stride, ::stride]
+    return out_img
+
+def generate_low_HSI(img, scale_factor, sigma=2):
+    """
+    现在支持：
+      - numpy (H,W,C)
+      - torch (B,C,H,W)
+    """
+    return downsamplePSF(img, sigma=sigma, stride=scale_factor)
 
 def train(train_list, 
           image_size, 
@@ -55,6 +125,7 @@ def train(train_list,
     # train_ref, train_lr, train_hr = train_list
     torch.set_default_tensor_type(torch.cuda.FloatTensor)
     train_ref, train_lr, train_hr = train_list
+    
     # h, w = train_ref.size(2), train_ref.size(3)
     # HH = []
     # WW = []
@@ -66,9 +137,9 @@ def train(train_list,
     # h_str = random.randint(0, h-image_size-1)
     # w_str = random.randint(0, w-image_size-1)
 
+    
     train_ref = train_ref[:, :, h_str:h_str+image_size, w_str:w_str+image_size]    
-    train_lr = gaussian_blur_tensor(train_ref, ksize=scale_ratio, sigma=2.0)
-    train_lr = F.interpolate(train_ref, scale_factor=1/(scale_ratio*1.0))    
+    train_lr = generate_low_HSI(train_ref, scale_ratio, sigma=2.0)  
     train_hr = train_hr[:, :, h_str:h_str+image_size, w_str:w_str+image_size]
 
     model.train()
