@@ -67,7 +67,7 @@ def train(train_list,
     # w_str = random.randint(0, w-image_size-1)
 
     train_ref = train_ref[:, :, h_str:h_str+image_size, w_str:w_str+image_size]    
-    train_lr = gaussian_blur_tensor(train_ref, ksize=5, sigma=2.0)
+    train_lr = gaussian_blur_tensor(train_ref, ksize=scale_ratio, sigma=2.0)
     train_lr = F.interpolate(train_ref, scale_factor=1/(scale_ratio*1.0))    
     train_hr = train_hr[:, :, h_str:h_str+image_size, w_str:w_str+image_size]
 
