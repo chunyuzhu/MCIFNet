@@ -4,24 +4,12 @@ def args_parser():
     parser = argparse.ArgumentParser()
 
     parser.add_argument('-arch', type=str, default='MCIFNet',
-                            choices=[
-                                     # the proposed method
-                                     'SSRNET', 
-                                     # these five models are used for comparison experiments
-                                     'TSFN'
-                                     'HyperKite'
-                                     '_3DT_Net'
-                                     'PSRTnet'                                     
-                                     'DCT'
-                                     'Fusformer'
-                                     
-                                     'MCIFNet'
-                                     ])
+                            choices=['MCIFNet'])
 
     parser.add_argument('-root', type=str, default='./data')    
     parser.add_argument('-dataset', type=str, default='IEEE2018',
-                            choices=['PaviaU', 'Chikusei','Pavia','IEEE2018','Botswana','realdata'])    
-    parser.add_argument('--scale_ratio', type=float, default=4)
+                            choices=['PaviaU', 'Chikusei', 'Pavia', 'IEEE2018', 'Botswana'])    
+    parser.add_argument('--scale_ratio', type=int, default=4)
     parser.add_argument('--n_bands', type=int, default=0)
     parser.add_argument('--n_select_bands', type=int, default=4)
 
